@@ -1,0 +1,10 @@
+opencv-python
+numpy
+scipy
+pillow
+google-genai
+lerobot[feetech]
+mujoco
+urchin
+placo
+requests

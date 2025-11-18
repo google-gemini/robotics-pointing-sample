@@ -4,43 +4,65 @@ This repository contains a demonstration of a Vision-Language-Action (VLA)
 system using the SO-101 robot arm, an attached USB camera, and the Gemini
 Robotics ER 1.5 model for zero-shot object detection and pointing.
 
-## 1. Prerequisites
+## 1. Quick Start
 
-Before running the script, set up your environment and install dependencies.
-
-### Environment setup (Linux/macOS)
-
-The recommended way to set up your environment is based on the
-[LeRobot installation instructions](https://huggingface.co/docs/lerobot/en/installation#installation).
-
-1.  **Install Conda (Miniforge recommended):**
-
+1.  **Clone the repository:**
     ```bash
-    wget "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname)-$(uname -m).sh"
-    bash Miniforge3-$(uname)-$(uname -m).sh
+    git clone <repo_url>
+    cd robotics-pointing-sample
     ```
 
-2.  **Create and Activate Environment:**
+2.  **Run the setup script:**
+    ```bash
+    bash setup.sh
+    ```
 
+3.  **Activate the environment:**
+    ```bash
+    conda activate gemini-robotics-pointing
+    ```
+
+### Manual Setup (Alternative)
+
+If you prefer to set up manually:
+
+1.  **Create Environment:**
     ```bash
     conda create -y -n gemini-robotics-pointing python=3.10
     conda activate gemini-robotics-pointing
     ```
 
-3.  **Install ffmpeg:**
-
+2.  **Install ffmpeg:**
     ```bash
     conda install ffmpeg -c conda-forge
     ```
 
-4.  **Install Python dependencies:**
-
+3.  **Install Python dependencies:**
     ```bash
-    pip install opencv-python numpy scipy pillow google-genai \
-    "lerobot[feetech]" mujoco urchin placo requests
+    pip install -r requirements.txt
     ```
 
-## 2. Get configuration parameters and run the script
+## 2. Configuration
+
+You can avoid typing long command-line arguments by setting your hardware details and API key in `config.py`.
+
+1.  Open `config.py`.
+2.  Set `GOOGLE_API_KEY` to your API key.
+3.  Set `DEFAULT_PORT` and `DEFAULT_ROBOT_ID` to match your hardware.
+
+Example `config.py`:
+```python
+GOOGLE_API_KEY = "AIzaSy..."
+DEFAULT_PORT = "/dev/tty.usbmodem1101"
+DEFAULT_ROBOT_ID = "so101_follower"
+```
+
+Now you can run the script simply:
+```bash
+python workshop.py
+```
+
+## 3. Run the script
 
 To identify the USB port for your robot arm, use the
 [`lerobot-find-port`](https://huggingface.co/docs/lerobot/en/so101#1-find-the-usb-ports-associated-with-each-arm)
@@ -119,63 +141,63 @@ After successful calibration, the script will enter an interactive loop:
 
 <table>
   <tr>
-   <td style="background-color: #f8fafd"><strong>Argument</strong>
-   </td>
-   <td style="background-color: #f8fafd"><strong>Description</strong>
-   </td>
-   <td style="background-color: #f8fafd"><strong>Default Value</strong>
-   </td>
-   <td style="background-color: #f8fafd"><strong>Required?</strong>
-   </td>
+    <td style="background-color: #f8fafd"><strong>Argument</strong>
+    </td>
+    <td style="background-color: #f8fafd"><strong>Description</strong>
+    </td>
+    <td style="background-color: #f8fafd"><strong>Default (from config.py)</strong>
+    </td>
+    <td style="background-color: #f8fafd"><strong>Required?</strong>
+    </td>
   </tr>
   <tr>
-   <td style="background-color: #f8fafd">--api-key
-   </td>
-   <td style="background-color: #f8fafd">Your Google AI Studio API Key.
-   </td>
-   <td style="background-color: #f8fafd">N/A
-   </td>
-   <td style="background-color: #f8fafd"><strong>Yes</strong>
-   </td>
+    <td style="background-color: #f8fafd">--api-key
+    </td>
+    <td style="background-color: #f8fafd">Your Google AI Studio API Key.
+    </td>
+    <td style="background-color: #f8fafd"><code>GOOGLE_API_KEY</code>
+    </td>
+    <td style="background-color: #f8fafd">Yes (CLI or Config)
+    </td>
   </tr>
   <tr>
-   <td style="background-color: #f8fafd">--port
-   </td>
-   <td style="background-color: #f8fafd">Serial port connected to the robot arm.
-   </td>
-   <td style="background-color: #f8fafd">N/A
-   </td>
-   <td style="background-color: #f8fafd"><strong>Yes</strong>
-   </td>
+    <td style="background-color: #f8fafd">--port
+    </td>
+    <td style="background-color: #f8fafd">Serial port connected to the robot arm.
+    </td>
+    <td style="background-color: #f8fafd"><code>DEFAULT_PORT</code>
+    </td>
+    <td style="background-color: #f8fafd">Yes (CLI or Config)
+    </td>
   </tr>
   <tr>
-   <td style="background-color: #f8fafd">--robot-id
-   </td>
-   <td style="background-color: #f8fafd">ID of the robot arm; must match calibration filename without extension.
-   </td>
-   <td style="background-color: #f8fafd">N/A
-   </td>
-   <td style="background-color: #f8fafd"><strong>Yes</strong>
-   </td>
+    <td style="background-color: #f8fafd">--robot-id
+    </td>
+    <td style="background-color: #f8fafd">ID of the robot arm.
+    </td>
+    <td style="background-color: #f8fafd"><code>DEFAULT_ROBOT_ID</code>
+    </td>
+    <td style="background-color: #f8fafd">Yes (CLI or Config)
+    </td>
   </tr>
   <tr>
-   <td style="background-color: #f8fafd">--camera-index
-   </td>
-   <td style="background-color: #f8fafd">Index of the USB camera (try 0, 1, or 2).
-   </td>
-   <td style="background-color: #f8fafd">N/A
-   </td>
-   <td style="background-color: #f8fafd"><strong>Yes</strong>
-   </td>
+    <td style="background-color: #f8fafd">--camera-index
+    </td>
+    <td style="background-color: #f8fafd">Index of the USB camera.
+    </td>
+    <td style="background-color: #f8fafd"><code>DEFAULT_CAMERA_INDEX</code>
+    </td>
+    <td style="background-color: #f8fafd">No
+    </td>
   </tr>
   <tr>
    <td style="background-color: #f8fafd">--calibration-dir
    </td>
-   <td style="background-color: #f8fafd">Directory containing the arm calibration files, when not using the default location or the lerobot-calibrate command.
+   <td style="background-color: #f8fafd">Directory containing the arm calibration files (e.g., <code>./calib</code>). The file must be named <code>{robot_id}.json</code> inside this directory.
    </td>
-   <td style="background-color: #f8fafd">N/A
+   <td style="background-color: #f8fafd"><code>DEFAULT_CALIBRATION_DIR</code>
    </td>
-   <td style="background-color: #f8fafd"><strong>No</strong>
+   <td style="background-color: #f8fafd">No
    </td>
   </tr>
   <tr>
@@ -209,3 +231,20 @@ After successful calibration, the script will enter an interactive loop:
    </td>
   </tr>
 </table>
+
+## 3. Troubleshooting
+
+| Issue | Possible Cause | Solution |
+| :--- | :--- | :--- |
+| **Camera not found** | Wrong index or permission denied | Try `--camera-index 1` or check OS permissions. |
+| **Robot not moving** | Port error or torque disabled | Check `--port` (use `lerobot-find-port`). Ensure power is on. |
+| **Calibration fails** | Board obscured or lighting | Ensure ChArUco board is fully visible and well-lit. |
+| **Gemini Error** | Invalid API Key or Quota | Check your API key and quota in AI Studio. |
+
+## 4. Hackathon Challenges
+
+Want to extend this project? Try these challenges:
+
+1.  **Pick & Place**: Instead of just pointing, try to grasp the object!
+2.  **Voice Control**: Integrate a speech-to-text library to control the robot with your voice.
+3.  **Multi-Step Reasoning**: Ask Gemini to "point to the object to the left of the red block".

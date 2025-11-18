@@ -17,32 +17,13 @@ import numpy as np
 from PIL import Image
 import requests
 
+import config
+
 # Suppress noisy logs from libraries
 logging.getLogger("lerobot").setLevel(logging.WARNING)
 
-# --- Robot and Calibration Constants ---
 
-# Joint names for the SO-101 arm
-JOINT_NAMES = [
-    "shoulder_pan.pos",
-    "shoulder_lift.pos",
-    "elbow_flex.pos",
-    "wrist_flex.pos",
-    "wrist_roll.pos",
-    "gripper.pos",
-]
-# Sensible "Home" pose for arm in degrees
-HOME_POSE = np.array([0.0, -30.0, -30.0, 75.0, -60.0, 0.0])
-CALIBRATION_FILE = "homography_calibration.npy"
-
-# ChArUco Board Configuration (Must match your physical board)
-SQUARES_X = 5
-SQUARES_Y = 7
-SQUARE_LENGTH = 0.035  # meters
-MARKER_LENGTH = 0.026  # meters
-DICT_TYPE = cv2.aruco.DICT_4X4_250
-
-# --- Helper Functions (Replaced Notebook-Specific Code) ---
+# --- Helper Functions ---
 
 
 def show_image(image_bgr, window_name="Vision Feedback"):
@@ -73,13 +54,14 @@ def move_to_joints(bot, target_joints_deg, gripper_pos=0, duration=1.5):
   """Interpolates directly to specific joint angles (no IK)."""
   if bot is None:
     print(
-        "⚠️ Robot not connected. Simulating joint move to"
+        "⚠️ [SIM] Robot not connected. Simulating joint move to"
         f" {np.round(target_joints_deg, 2)} deg."
     )
+    time.sleep(duration) # Simulate time taken
     return
 
   # Get current angles
-  q_current = np.array([bot.get_observation()[n] for n in JOINT_NAMES])
+  q_current = np.array([bot.get_observation()[n] for n in config.JOINT_NAMES])
   target_joints_deg_full = np.copy(target_joints_deg)
 
   # Simple interpolation loop
@@ -87,7 +69,7 @@ def move_to_joints(bot, target_joints_deg, gripper_pos=0, duration=1.5):
   for i in range(1, steps + 1):
     t = i / steps
     q_interp = q_current + t * (target_joints_deg_full - q_current)
-    bot.send_action({name: val for name, val in zip(JOINT_NAMES, q_interp)})
+    bot.send_action({name: val for name, val in zip(config.JOINT_NAMES, q_interp)})
     time.sleep(duration / steps)
 
 
@@ -268,13 +250,13 @@ def perform_move(bot, engine, target_xyz, gripper_pos=0, duration=1.5):
   """Calculates IK and moves the robot smoothly to the target XYZ."""
   if bot is None:
     print(
-        f"⚠️ Robot not connected (Sim Mode). Target: {np.round(target_xyz, 3)}m."
+        f"⚠️ [SIM] Robot not connected. Target: {np.round(target_xyz, 3)}m."
         " Skipping move."
     )
     return True
 
   # 1. Get current state (all 6 joints, including gripper)
-  q_current = np.array([bot.get_observation()[n] for n in JOINT_NAMES])
+  q_current = np.array([bot.get_observation()[n] for n in config.JOINT_NAMES])
 
   # 2. Construct Target Pose (4x4 matrix)
   target_pose = np.eye(4)
@@ -336,9 +318,9 @@ def calibrate_system(cap, board_origin_robot_m):
   """Detects the ChArUco board and computes the Homography matrix (H)
   to map pixels to robot (X, Y) meters.
   """
-  aruco_dict = cv2.aruco.getPredefinedDictionary(DICT_TYPE)
+  aruco_dict = cv2.aruco.getPredefinedDictionary(config.DICT_TYPE)
   board = cv2.aruco.CharucoBoard(
-      (SQUARES_X, SQUARES_Y), SQUARE_LENGTH, MARKER_LENGTH, aruco_dict
+      (config.SQUARES_X, config.SQUARES_Y), config.SQUARE_LENGTH, config.MARKER_LENGTH, aruco_dict
   )
   detector = cv2.aruco.CharucoDetector(board)
 
@@ -387,8 +369,8 @@ def calibrate_system(cap, board_origin_robot_m):
     H, _ = cv2.findHomography(np.array(img_points), np.array(obj_points))
 
     # Save to file
-    np.save(CALIBRATION_FILE, {"H": H, "z": 0.0})
-    print(f"✅ Calibration Saved to '{CALIBRATION_FILE}'")
+    np.save(config.CALIBRATION_FILE, {"H": H, "z": 0.0})
+    print(f"✅ Calibration Saved to '{config.CALIBRATION_FILE}'")
 
     # --- Verification Output & Visualization ---
     origin_indices = np.where(ids == 0)[0]
@@ -437,26 +419,29 @@ def main(args):
 
   # Robot Hardware Connection (SO101Follower)
   robot = None
-  print(f"\n⏳ Connecting to robot on {args.port}...")
-  try:
-    if args.calibration_dir is None:
-      config = SO101FollowerConfig(port=args.port, id=args.robot_id)
-    else:
-      config = SO101FollowerConfig(
-          port=args.port,
-          id=args.robot_id,
-          calibration_dir=args.calibration_dir,
-      )
-    robot = SO101Follower(config)
-    robot.connect()
-    robot.bus.disable_torque()
-    print("✅ Robot Hardware Connected & Torque Disabled.")
+  if not args.sim:
+    print(f"\n⏳ Connecting to robot on {args.port}...")
+    try:
+      if args.calibration_dir is None:
+        config_robot = SO101FollowerConfig(port=args.port, id=args.robot_id)
+      else:
+        config_robot = SO101FollowerConfig(
+            port=args.port,
+            id=args.robot_id,
+            calibration_dir=args.calibration_dir,
+        )
+      robot = SO101Follower(config_robot)
+      robot.connect()
+      robot.bus.disable_torque()
+      print("✅ Robot Hardware Connected & Torque Disabled.")
 
-  except Exception as e:
-    print(f"⚠️ Hardware connection failed: {e}")
-    print(
-        "   ➡️ Proceeding in Simulation Mode (motion commands will be skipped)."
-    )
+    except Exception as e:
+      print(f"⚠️ Hardware connection failed: {e}")
+      print(
+          "   ➡️ Proceeding in Simulation Mode (motion commands will be skipped)."
+      )
+  else:
+     print("⚠️ Simulation Mode Enabled: Skipping robot connection.")
 
   # Camera Setup
   cap = cv2.VideoCapture(args.camera_index)
@@ -495,10 +480,10 @@ def main(args):
 
   h_matrix, z_surface = None, None
 
-  if Path(CALIBRATION_FILE).exists() and not args.recalibrate:
-    print(f"\nFound existing calibration file: {CALIBRATION_FILE}.")
+  if Path(config.CALIBRATION_FILE).exists() and not args.recalibrate:
+    print(f"\nFound existing calibration file: {config.CALIBRATION_FILE}.")
     try:
-      calib_data = np.load(CALIBRATION_FILE, allow_pickle=True).item()
+      calib_data = np.load(config.CALIBRATION_FILE, allow_pickle=True).item()
       h_matrix = calib_data["H"]
       z_surface = calib_data["z"]
       print(f"✅ Calibration Loaded. Table Z-Plane: {z_surface:.4f}m")
@@ -516,14 +501,11 @@ def main(args):
 
   # --- 3. Main Action Loop ---
 
-  HOVER_HEIGHT = 0.10  # Meters above table
-  POINT_HEIGHT = 0.02  # Meters above table
-
   print("\n🤖 SYSTEM READY. Type 'q' to quit.")
 
   # Move to Home first
   print("🏠 Moving to Home Position...")
-  move_to_joints(robot, HOME_POSE, gripper_pos=0, duration=2.0)
+  move_to_joints(robot, config.HOME_POSE, gripper_pos=0, duration=config.MOVE_DURATION_HOME)
 
   while True:
     target_name = input(
@@ -541,6 +523,12 @@ def main(args):
       print("❌ Camera Error")
       continue
 
+    # Show "Thinking" state
+    disp_thinking = frame.copy()
+    cv2.putText(disp_thinking, f"Thinking: {target_name}...", (50, 50), 
+                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+    show_image(disp_thinking, "Vision Feedback")
+
     print(f"🤔 Asking Gemini to find '{target_name}'...")
     pixel_center = get_object_center_gemini(client, frame, target_name)
 
@@ -554,8 +542,8 @@ def main(args):
       # Perform the homography transformation
       robot_xy = cv2.perspectiveTransform(px_array, h_matrix)[0][0]
 
-      target_xyz = [robot_xy[0], robot_xy[1], z_surface + POINT_HEIGHT]
-      hover_xyz = [robot_xy[0], robot_xy[1], z_surface + HOVER_HEIGHT]
+      target_xyz = [robot_xy[0], robot_xy[1], z_surface + config.POINT_HEIGHT]
+      hover_xyz = [robot_xy[0], robot_xy[1], z_surface + config.HOVER_HEIGHT]
 
       print(
           f"📍 Mapped: Pixels {pixel_center} -> Robot"
@@ -568,21 +556,30 @@ def main(args):
       cv2.drawMarker(
           disp, tuple(pixel_center), (0, 255, 0), cv2.MARKER_CROSS, 20, 2
       )
-      show_image(disp, "Target Found")
+      cv2.putText(disp, f"Target: {target_name}", (50, 50), 
+                  cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+      show_image(disp, "Vision Feedback")
 
       # 3. Action Sequence
       print("🏠 Moving to HOME...")
-      move_to_joints(robot, HOME_POSE, duration=1.5)
+      move_to_joints(robot, config.HOME_POSE, duration=1.5)
       time.sleep(0.2)
       print("🚀 Moving to HOVER...")
-      if perform_move(robot, kin_engine, hover_xyz, duration=1.5):
+      if perform_move(robot, kin_engine, hover_xyz, duration=config.MOVE_DURATION_HOVER):
 
         time.sleep(0.2)
         print("👇 Descending to POINT...")
-        perform_move(robot, kin_engine, target_xyz, duration=1.0)
+        perform_move(robot, kin_engine, target_xyz, duration=config.MOVE_DURATION_POINT)
+        
+        # Challenge Hint
+        # print("TODO: Implement 'Pick' logic here!")
 
     else:
       print("🤷 Gemini could not locate the object.")
+      disp_fail = frame.copy()
+      cv2.putText(disp_fail, "Not Found", (50, 50), 
+                  cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+      show_image(disp_fail, "Vision Feedback")
 
   # --- Cleanup ---
   if robot:
@@ -604,7 +601,7 @@ if __name__ == "__main__":
   parser.add_argument(
       "--port",
       type=str,
-      required=True,
+      default=config.DEFAULT_PORT,
       help=(
           "The serial port for the robot arm (e.g., /dev/tty.usbmodem... or"
           " COM3)."
@@ -613,15 +610,16 @@ if __name__ == "__main__":
   parser.add_argument(
       "--robot-id",
       type=str,
-      required=True,
+      default=config.DEFAULT_ROBOT_ID,
       help=(
           "Identifier for the robot; must match calibration filename without"
-          " extension..",
+          " extension.",
       ),
   )
   parser.add_argument(
       "--calibration-dir",
       type=str,
+      default=config.DEFAULT_CALIBRATION_DIR,
       help=(
           "Directory containing the arm calibration files, when not using"
           " default location or lerobot-calibrate command."
@@ -630,8 +628,13 @@ if __name__ == "__main__":
   parser.add_argument(
       "--camera-index",
       type=int,
-      required=True,
+      default=config.DEFAULT_CAMERA_INDEX,
       help="The index of the USB camera to use (e.g., 0, 1, 2).",
+  )
+  parser.add_argument(
+      "--sim",
+      action="store_true",
+      help="Run in simulation mode (no robot hardware required).",
   )
 
   # Kinematics/Brain Parameters
@@ -639,13 +642,13 @@ if __name__ == "__main__":
       "--backend",
       type=str,
       choices=["lerobot", "argo", "mujoco"],
-      default="argo",
+      default=config.DEFAULT_BACKEND,
       help="The kinematics solver backend to use.",
   )
   parser.add_argument(
       "--api-key",
       type=str,
-      required=True,
+      default=config.GOOGLE_API_KEY,
       help="Your Google AI Studio API Key for Gemini Robotics ER 1.5.",
   )
 
@@ -654,7 +657,7 @@ if __name__ == "__main__":
       "--board-origin",
       type=float,
       nargs=2,
-      default=[0.29, 0.0525],
+      default=config.DEFAULT_BOARD_ORIGIN,
       metavar=("X_FORWARD", "Y_LEFT"),
       help=(
           "Robot coordinates (meters) for the ChArUco board origin (Corner ID"
@@ -668,4 +671,26 @@ if __name__ == "__main__":
   )
 
   args = parser.parse_args()
+  
+  # --- Validation & Defaults ---
+  
+  # 1. API Key
+  if not args.api_key:
+      print("\n❌ Error: Google API Key is missing.")
+      print("   Please provide it via --api-key OR set GOOGLE_API_KEY in config.py.")
+      sys.exit(1)
+
+  # 2. Hardware (if not sim)
+  if not args.sim:
+      missing_args = []
+      if not args.port:
+          missing_args.append("--port (or config.DEFAULT_PORT)")
+      if not args.robot_id:
+          missing_args.append("--robot-id (or config.DEFAULT_ROBOT_ID)")
+      
+      if missing_args:
+          print(f"\n❌ Error: Missing required hardware arguments: {', '.join(missing_args)}")
+          print("   Please provide them via command line OR set them in config.py.")
+          sys.exit(1)
+
   main(args)
