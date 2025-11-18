@@ -289,29 +289,34 @@ def get_object_center_gemini(client, image_bgr, target_name):
       "where y and x are normalized coordinates from 0 to 1000."
   )
 
-  try:
-    # Using the specialized Robotics ER model
-    response = client.models.generate_content(
-        model="gemini-robotics-er-1.5-preview",
-        contents=[img_pil, prompt],
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json", temperature=0.5
-        ),
-    )
+  retries = 3
+  for attempt in range(retries):
+    try:
+      # Using the specialized Robotics ER model
+      response = client.models.generate_content(
+          model="gemini-robotics-er-1.5-preview",
+          contents=[img_pil, prompt],
+          config=types.GenerateContentConfig(
+              response_mime_type="application/json", temperature=0.5
+          ),
+      )
 
-    # Parse JSON
-    coords = json.loads(response.text.strip())["point"]
-    y_norm, x_norm = coords
+      # Parse JSON
+      coords = json.loads(response.text.strip())["point"]
+      y_norm, x_norm = coords
 
-    # Convert normalized (0-1000) to pixels
-    x_px = int(x_norm / 1000.0 * w_px)
-    y_px = int(y_norm / 1000.0 * h_px)
+      # Convert normalized (0-1000) to pixels
+      x_px = int(x_norm / 1000.0 * w_px)
+      y_px = int(y_norm / 1000.0 * h_px)
 
-    return np.array([x_px, y_px])
+      return np.array([x_px, y_px])
 
-  except Exception as e:
-    print(f"Gemini Vision Error: {e}")
-    return None
+    except Exception as e:
+      print(f"⚠️ Gemini Vision Error (Attempt {attempt + 1}/{retries}): {e}")
+      time.sleep(1)
+  
+  print("❌ Gemini failed after multiple attempts.")
+  return None
 
 
 def calibrate_system(cap, board_origin_robot_m):
@@ -454,10 +459,7 @@ def main(args):
     cap.release()
     return
   print(f"✅ Camera Connected! Resolution: {frame.shape[1]}x{frame.shape[0]}")
-  show_image(frame, "Initial Camera Check")
-  cv2.waitKey(2000)  # Show for 2 seconds
-  cv2.destroyAllWindows()
-
+  
   # Gemini API Setup
   if not args.api_key:
     print(
@@ -480,106 +482,141 @@ def main(args):
 
   h_matrix, z_surface = None, None
 
-  if Path(config.CALIBRATION_FILE).exists() and not args.recalibrate:
-    print(f"\nFound existing calibration file: {config.CALIBRATION_FILE}.")
-    try:
-      calib_data = np.load(config.CALIBRATION_FILE, allow_pickle=True).item()
-      h_matrix = calib_data["H"]
-      z_surface = calib_data["z"]
-      print(f"✅ Calibration Loaded. Table Z-Plane: {z_surface:.4f}m")
-    except Exception as e:
-      print(f"❌ Failed to load calibration: {e}. Recalibrating.")
+  if not args.sim:
+    if Path(config.CALIBRATION_FILE).exists() and not args.recalibrate:
+      print(f"\nFound existing calibration file: {config.CALIBRATION_FILE}.")
+      try:
+        calib_data = np.load(config.CALIBRATION_FILE, allow_pickle=True).item()
+        h_matrix = calib_data["H"]
+        z_surface = calib_data["z"]
+        print(f"✅ Calibration Loaded. Table Z-Plane: {z_surface:.4f}m")
+      except Exception as e:
+        print(f"❌ Failed to load calibration: {e}. Recalibrating.")
+        h_matrix, z_surface = calibrate_system(cap, args.board_origin)
+    else:
       h_matrix, z_surface = calibrate_system(cap, args.board_origin)
-  else:
-    h_matrix, z_surface = calibrate_system(cap, args.board_origin)
 
-  if h_matrix is None:
-    print("\nFATAL ERROR: System is not calibrated. Exiting.")
-    if cap:
-      cap.release()
-    return
+    if h_matrix is None:
+      print("\nFATAL ERROR: System is not calibrated. Exiting.")
+      if cap:
+        cap.release()
+      return
+  else:
+    print("\n⚠️ Simulation Mode: Skipping Calibration (Visual Only).")
 
   # --- 3. Main Action Loop ---
 
-  print("\n🤖 SYSTEM READY. Type 'q' to quit.")
+  print("\n🤖 SYSTEM READY.")
+  print("   - Press 'SPACE' in the video window to capture and command.")
+  print("   - Press 'q' to quit.")
 
   # Move to Home first
-  print("🏠 Moving to Home Position...")
-  move_to_joints(robot, config.HOME_POSE, gripper_pos=0, duration=config.MOVE_DURATION_HOME)
+  if robot:
+    print("🏠 Moving to Home Position...")
+    move_to_joints(robot, config.HOME_POSE, gripper_pos=0, duration=config.MOVE_DURATION_HOME)
+
+  cv2.namedWindow("Vision Feedback", cv2.WINDOW_AUTOSIZE)
 
   while True:
-    target_name = input(
-        "\n⌨️ What should I point at? (e.g., 'blue block', 'pen'): "
-    ).strip()
-    if target_name.lower() == "q":
-      print("👋 Exiting.")
-      break
-
-    # 1. Capture & Vision
-    for _ in range(5):
-      cap.read()  # Clear buffer
+    # 1. Continuous Video Feed
     ret, frame = cap.read()
     if not ret:
       print("❌ Camera Error")
+      time.sleep(0.5)
       continue
 
-    # Show "Thinking" state
-    disp_thinking = frame.copy()
-    cv2.putText(disp_thinking, f"Thinking: {target_name}...", (50, 50), 
-                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
-    show_image(disp_thinking, "Vision Feedback")
+    # Overlay Instructions
+    disp = frame.copy()
+    cv2.putText(disp, "Ready. Press SPACE to command, 'q' to quit.", (20, 30), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+    
+    # Show Frame
+    cv2.imshow("Vision Feedback", disp)
+    
+    # Check Input
+    key = cv2.waitKey(1) & 0xFF
 
-    print(f"🤔 Asking Gemini to find '{target_name}'...")
-    pixel_center = get_object_center_gemini(client, frame, target_name)
+    if key == ord('q'):
+      print("👋 Exiting.")
+      break
+    
+    elif key == ord(' '):
+      # --- Capture & Command Sequence ---
+      
+      # 1. Freeze Frame & Prompt
+      print("\n📸 Image Captured.")
+      cv2.putText(disp, "PAUSED - Enter prompt in terminal...", (20, 70), 
+                  cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+      cv2.imshow("Vision Feedback", disp)
+      cv2.waitKey(1) # Update window
 
-    if pixel_center is not None:
-      # 2. Grounding (Pixel -> Robot Meter)
-      px_array = np.array([[pixel_center]], dtype="float32")
+      target_name = input("⌨️  What should I point at? (e.g., 'blue block'): ").strip()
+      
+      if not target_name:
+        print("⚠️ Empty prompt, resuming feed.")
+        continue
 
-      # The perspective transform requires the input array to be shaped (N, 1, 2)
-      px_array = px_array.reshape(-1, 1, 2)
+      # 2. Thinking...
+      print(f"🤔 Asking Gemini to find '{target_name}'...")
+      cv2.putText(disp, f"Thinking: {target_name}...", (20, 110), 
+                  cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 100, 0), 2)
+      cv2.imshow("Vision Feedback", disp)
+      cv2.waitKey(1)
 
-      # Perform the homography transformation
-      robot_xy = cv2.perspectiveTransform(px_array, h_matrix)[0][0]
+      pixel_center = get_object_center_gemini(client, frame, target_name)
 
-      target_xyz = [robot_xy[0], robot_xy[1], z_surface + config.POINT_HEIGHT]
-      hover_xyz = [robot_xy[0], robot_xy[1], z_surface + config.HOVER_HEIGHT]
+      if pixel_center is not None:
+        # Visualize Result (Always show this)
+        cv2.circle(disp, tuple(pixel_center), 10, (0, 255, 0), 2)
+        cv2.drawMarker(
+            disp, tuple(pixel_center), (0, 255, 0), cv2.MARKER_CROSS, 20, 2
+        )
+        cv2.putText(disp, f"Target: {target_name}", (20, 150), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        cv2.imshow("Vision Feedback", disp)
+        cv2.waitKey(1)
 
-      print(
-          f"📍 Mapped: Pixels {pixel_center} -> Robot"
-          f" {np.round(target_xyz, 3)}m"
-      )
+        if h_matrix is not None:
+          # 2. Grounding (Pixel -> Robot Meter)
+          px_array = np.array([[pixel_center]], dtype="float32")
+          px_array = px_array.reshape(-1, 1, 2)
+          robot_xy = cv2.perspectiveTransform(px_array, h_matrix)[0][0]
 
-      # Visualize the detected point
-      disp = frame.copy()
-      cv2.circle(disp, tuple(pixel_center), 10, (0, 255, 0), 2)
-      cv2.drawMarker(
-          disp, tuple(pixel_center), (0, 255, 0), cv2.MARKER_CROSS, 20, 2
-      )
-      cv2.putText(disp, f"Target: {target_name}", (50, 50), 
-                  cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-      show_image(disp, "Vision Feedback")
+          target_xyz = [robot_xy[0], robot_xy[1], z_surface + config.POINT_HEIGHT]
+          hover_xyz = [robot_xy[0], robot_xy[1], z_surface + config.HOVER_HEIGHT]
 
-      # 3. Action Sequence
-      print("🏠 Moving to HOME...")
-      move_to_joints(robot, config.HOME_POSE, duration=1.5)
-      time.sleep(0.2)
-      print("🚀 Moving to HOVER...")
-      if perform_move(robot, kin_engine, hover_xyz, duration=config.MOVE_DURATION_HOVER):
+          print(
+              f"📍 Mapped: Pixels {pixel_center} -> Robot"
+              f" {np.round(target_xyz, 3)}m"
+          )
 
-        time.sleep(0.2)
-        print("👇 Descending to POINT...")
-        perform_move(robot, kin_engine, target_xyz, duration=config.MOVE_DURATION_POINT)
-        
-        # Challenge Hint
-        # print("TODO: Implement 'Pick' logic here!")
+          # 3. Action Sequence
+          print("🏠 Moving to HOME...")
+          move_to_joints(robot, config.HOME_POSE, duration=1.5)
+          time.sleep(0.2)
+          print("🚀 Moving to HOVER...")
+          if perform_move(robot, kin_engine, hover_xyz, duration=config.MOVE_DURATION_HOVER):
 
-    else:
-      print("🤷 Gemini could not locate the object.")
-      disp_fail = frame.copy()
-      cv2.putText(disp_fail, "Not Found", (50, 50), 
-                  cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-      show_image(disp_fail, "Vision Feedback")
+            time.sleep(0.2)
+            print("👇 Descending to POINT...")
+            perform_move(robot, kin_engine, target_xyz, duration=config.MOVE_DURATION_POINT)
+            
+            # Wait a bit to show the result
+            time.sleep(1.0)
+            
+            # Return Home
+            print("🏠 Returning to HOME...")
+            move_to_joints(robot, config.HOME_POSE, duration=1.5)
+        else:
+           print(f"📍 Target found at {pixel_center} (Visual Only).")
+           time.sleep(1.0) # Pause to let user see the result
+
+      else:
+        print("🤷 Gemini could not locate the object.")
+        cv2.putText(disp, "Not Found", (20, 150), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        cv2.imshow("Vision Feedback", disp)
+        cv2.waitKey(1000) # Show error for 1s
 
   # --- Cleanup ---
   if robot:

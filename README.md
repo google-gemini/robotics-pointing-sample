@@ -106,10 +106,10 @@ file itself. The filename must match the `robot-id`, e.g.
 `my_so101_follower.json`.
 
 ### Calibration step
-
+ 
 The first time you run the script, or if you use the `--recalibrate flag`, it
 will perform the ChArUco calibration.
-
+ 
 1.  **Ensure the ChArUco board is in the camera's view and unobstructed** before
     running the script.
 2.  The script will display a window showing the detected board (if successful)
@@ -121,21 +121,22 @@ will perform the ChArUco calibration.
     differently, measure and provide the actual distance as the `--board-origin
     X Y` argument.
 
+**Printable Calibration Sheets:**
+*   [Letter Size](media/calibration_sheet_letter.pdf)
+*   [A4 Size](media/calibration_sheet_A4.pdf)
+*   [Legal Size](media/calibration_sheet_legal.pdf)
+
 ### Interactive loop
-
-After successful calibration, the script will enter an interactive loop:
-
+ 
+After successful calibration, the script will enter an interactive video loop:
+ 
 1.  The robot moves to the home position.
-2.  The script prompts: "⌨️ What should I point at? (e.g., 'blue block',
-    'pen'):"
-3.  The camera captures an image, and the image is sent to Gemini with your
-    prompt.
-4.  Gemini returns the 2D pixel coordinate of the object's center.
-5.  The script uses the saved Homography matrix to convert the pixel coordinate
-    to real-world (X, Y) robot coordinates.
-6.  The robot executes a sequence: Home -> Hover 10cm above table -> Descend to
-    Point 2cm above table.
-7.  The loop repeats until you type `q`.
+2.  **Press `SPACE`** in the "Vision Feedback" window to capture an image and send a command.
+3.  The video feed will pause, and the terminal will prompt: "⌨️ What should I point at?".
+4.  Type your prompt (e.g., "blue block") and press Enter.
+5.  Gemini analyzes the image, and the robot points to the object.
+6.  The robot returns home, and the video feed resumes.
+7.  Press `q` in the video window to quit.
 
 ### Key script arguments
 
