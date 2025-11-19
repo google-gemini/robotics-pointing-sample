@@ -53,6 +53,7 @@ DICT_TYPE = cv2.aruco.DICT_4X4_250
 # --- Action Configuration ---
 HOVER_HEIGHT = 0.10  # Meters above table
 POINT_HEIGHT = 0.02  # Meters above table
-MOVE_DURATION_HOME = 2.0
-MOVE_DURATION_HOVER = 1.5
-MOVE_DURATION_POINT = 1.0
+MOVE_DURATION_HOME = 2.0  # Seconds
+MOVE_DURATION_HOVER = 1.5 # Seconds
+MOVE_DURATION_POINT = 1.0 # Seconds
+CONTROL_FREQUENCY = 50    # Hz (Control loop frequency)
