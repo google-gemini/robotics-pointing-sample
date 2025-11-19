@@ -62,18 +62,6 @@ def show_image(image_bgr, window_name="Vision Feedback"):
 
 # --- Main Logic Functions ---
 
-
-def show_image(img, title="Image"):
-  """Displays an image in an OpenCV window.
-
-  Args:
-      img: The image (numpy array) to display.
-      title: The title of the window.
-  """
-  cv2.imshow(title, img)
-  cv2.waitKey(1)
-
-
 def get_object_center_gemini(client, image_bgr, target_name):
   """Queries Gemini to find the pixel coordinates of a target object.
 
@@ -444,7 +432,7 @@ def main(args):
 
           # 3. Action Sequence
           print("🏠 Moving to HOME...")
-          move_to_joints(robot, config.HOME_POSE, duration=1.5)
+          move_to_joints(robot, config.HOME_POSE, duration=config.MOVE_DURATION_HOME)
           time.sleep(0.2)
           print("🚀 Moving to HOVER...")
           if perform_move(robot, kin_engine, hover_xyz, duration=config.MOVE_DURATION_HOVER):
