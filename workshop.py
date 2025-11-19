@@ -10,14 +10,22 @@ import time
 import cv2
 from google import genai
 from google.genai import types
-from lerobot.model.kinematics import RobotKinematics
-from lerobot.robots.so101_follower.config_so101_follower import SO101FollowerConfig
-from lerobot.robots.so101_follower.so101_follower import SO101Follower
+try:
+  # Import SO101 specific classes
+  from lerobot.robots.so101_follower.config_so101_follower import SO101FollowerConfig
+  from lerobot.robots.so101_follower.so101_follower import SO101Follower
+except ImportError:
+  print("⚠️ LeRobot not installed. Hardware connection will fail if not in sim mode.")
+  # Define dummies to prevent NameError in class definition or usage
+  SO101FollowerConfig = None
+  SO101Follower = None
 import numpy as np
 from PIL import Image
 import requests
 
 import config
+import robot_utils
+from robot_utils import KinematicsEngine, move_to_joints, perform_move
 
 # Suppress noisy logs from libraries
 logging.getLogger("lerobot").setLevel(logging.WARNING)
@@ -50,234 +58,33 @@ def show_image(image_bgr, window_name="Vision Feedback"):
     cv2.destroyAllWindows()
 
 
-def move_to_joints(bot, target_joints_deg, gripper_pos=0, duration=1.5):
-  """Interpolates directly to specific joint angles (no IK)."""
-  if bot is None:
-    print(
-        "⚠️ [SIM] Robot not connected. Simulating joint move to"
-        f" {np.round(target_joints_deg, 2)} deg."
-    )
-    time.sleep(duration) # Simulate time taken
-    return
-
-  # Get current angles
-  q_current = np.array([bot.get_observation()[n] for n in config.JOINT_NAMES])
-  target_joints_deg_full = np.copy(target_joints_deg)
-
-  # Simple interpolation loop
-  steps = int(duration * 50)
-  for i in range(1, steps + 1):
-    t = i / steps
-    q_interp = q_current + t * (target_joints_deg_full - q_current)
-    bot.send_action({name: val for name, val in zip(config.JOINT_NAMES, q_interp)})
-    time.sleep(duration / steps)
-
-
-# --- Kinematics Engine Class ---
-
-
-class KinematicsEngine:
-  """A unified interface for robot kinematics, abstracting away the underlying
-
-  math library. Handles asset downloading automatically.
-  """
-
-  def __init__(self, backend="lerobot", model_dir="third_party/SO101"):
-    self.backend = backend.lower()
-    self.model_dir = Path(model_dir)
-    self.model_dir.mkdir(exist_ok=True)
-    self.urdf_path = self.model_dir / "so101_new_calib.urdf"
-
-    self.solver = None
-    self.ee_link = "gripper_frame_link"  # End-effector link name
-
-    print(
-        f"\n⚙️ Initializing Kinematics with backend: {self.backend.upper()}..."
-    )
-
-    # 1. Download common assets if missing
-    self._ensure_assets()
-
-    # 2. Setup specific backend
-    if self.backend == "lerobot":
-      self._setup_lerobot()
-    elif self.backend == "argo":
-      self._setup_argo()
-    elif self.backend == "mujoco":
-      self._setup_mujoco()
-    else:
-      raise ValueError(f"Unknown backend: {backend}")
-
-  def _download_project_files(
-      self, base_url: str, file_paths: list[str], output_dir: Path
-  ):
-    """Helper method: Downloads files maintaining relative directory structure."""
-    output_dir.mkdir(parents=True, exist_ok=True)
-    print(f"   ⏳ Checking {len(file_paths)} assets...")
-
-    for rel_path in file_paths:
-      local_path = output_dir / rel_path
-      remote_url = f"{base_url.rstrip('/')}/{rel_path.lstrip('/')}"
-
-      if local_path.exists():
-        continue
-
-      local_path.parent.mkdir(parents=True, exist_ok=True)
-
-      try:
-        response = requests.get(remote_url)
-        response.raise_for_status()
-
-        with open(local_path, "wb") as f:
-          f.write(response.content)
-        print(f"   ⬇️ Downloaded: {rel_path}")
-
-      except Exception as e:
-        print(f"   ❌ Failed to download {rel_path}: {e}")
-
-    print("   ✅ Asset check complete.")
-
-  def _ensure_assets(self):
-    """Downloads URDF and Meshes directly from GitHub, fixing paths."""
-    repo_base = "https://raw.githubusercontent.com/TheRobotStudio/SO-ARM100/main/Simulation/SO101"
-
-    files_to_download = [
-        "so101_new_calib.urdf",
-        "assets/waveshare_mounting_plate_so101_v2.stl",
-        "assets/sts3215_03a_v1.stl",
-        "assets/motor_holder_so101_base_v1.stl",
-        "assets/wrist_roll_follower_so101_v1.stl",
-        "assets/moving_jaw_so101_v1.stl",
-        "assets/base_motor_holder_so101_v1.stl",
-        "assets/upper_arm_so101_v1.stl",
-        "assets/wrist_roll_pitch_so101_v2.stl",
-        "assets/under_arm_so101_v1.stl",
-        "assets/rotation_pitch_so101_v1.stl",
-        "assets/motor_holder_so101_wrist_v1.stl",
-        "assets/sts3215_03a_no_horn_v1.stl",
-        "assets/base_so101_v2.stl",
-    ]
-
-    # 1. Download files using the generic helper
-    self._download_project_files(repo_base, files_to_download, self.model_dir)
-
-  def _setup_lerobot(self):
-    """Sets up the official LeRobot kinematics solver."""
-    self.solver = RobotKinematics(urdf_path=str(self.urdf_path))
-    print("   ✅ LeRobot Kinematics ready.")
-
-  def _setup_mujoco(self):
-    """Sets up MuJoCo physics engine (Stub for future IK)."""
-    import mujoco
-
-    try:
-      print("   ✅ MuJoCo Model loaded (IK not yet implemented).")
-    except Exception as e:
-      print(f"   ❌ MuJoCo Load Error: {e}")
-
-  def _setup_argo(self):
-    """Sets up the custom 'Argo' control library/solver."""
-    self.argo_dir = Path("third_party/Argo-Robot/controls")
-    
-    try:
-      if str(self.argo_dir.resolve()) not in sys.path:
-        sys.path.append(str(self.argo_dir.resolve()))
-      from scripts.model import URDF_loader, RobotModel
-      from scripts.kinematics import URDF_Kinematics
-    except ImportError as e:
-      print(
-        "   ❌ Failed to import Argo controls, files or prereqs"
-        f" may be missing. Error: {e}"
-      )
-    try:
-      loader = URDF_loader()
-      loader.load(str(self.urdf_path))
-      self.argo_model = RobotModel(loader)
-      self.solver = URDF_Kinematics()
-      print("   ✅ Argo Kinematics ready.")
-    except Exception as e:
-      print(
-          f"   ❌ Failed to ready Argo Kinematics. Error: {e}"
-      )
-      raise
-
-  def compute_ik(self, current_joints_deg, target_pose_4x4):
-    """Computes IK returning joint degrees."""
-    try:
-      if self.backend == "lerobot":
-        q_sol = self.solver.inverse_kinematics(
-            current_joints_deg, target_pose_4x4
-        )
-
-      elif self.backend == "argo":
-        # Argo expects radians and reversed joint order
-        q_start = np.deg2rad(current_joints_deg)[::-1]
-        q_sol = self.solver.inverse_kinematics(
-            self.argo_model,
-            q_start,
-            target_pose_4x4,
-            self.ee_link,
-            use_orientation=False,
-            k=0.8,
-            n_iter=100,
-        )
-        if q_sol is None:
-          return None
-        q_sol = np.rad2deg(q_sol[::-1])
-
-      elif self.backend == "mujoco":
-        print("⚠️ MuJoCo IK not implemented yet.")
-        return None
-
-      # Check if gripper pos is missing and restore if needed (LeRobot/Argo only compute 5 arm joints)
-      if q_sol is not None and len(q_sol) == 5:
-        # Append current gripper position to the 5 arm joint solutions
-        q_sol = np.append(q_sol, current_joints_deg[-1])
-
-      return q_sol
-
-    except Exception as e:
-      print(f"IK Computation Error: {e}")
-      return None
-    # Should not be reachable, but ensure we don't return None if q_sol is set but not returned
-    return None  # Return None if no solution path was followed
 
 
 # --- Main Logic Functions ---
 
 
-def perform_move(bot, engine, target_xyz, gripper_pos=0, duration=1.5):
-  """Calculates IK and moves the robot smoothly to the target XYZ."""
-  if bot is None:
-    print(
-        f"⚠️ [SIM] Robot not connected. Target: {np.round(target_xyz, 3)}m."
-        " Skipping move."
-    )
-    return True
+def show_image(img, title="Image"):
+  """Displays an image in an OpenCV window.
 
-  # 1. Get current state (all 6 joints, including gripper)
-  q_current = np.array([bot.get_observation()[n] for n in config.JOINT_NAMES])
-
-  # 2. Construct Target Pose (4x4 matrix)
-  target_pose = np.eye(4)
-  target_pose[:3, 3] = target_xyz
-
-  # 3. Compute IK
-  q_target_arm_full = engine.compute_ik(q_current, target_pose)
-
-  if q_target_arm_full is None:
-    print(f"❌ Unreachable Target: {np.round(target_xyz, 3)}")
-    return False
-
-  # 4. Execute (Reuse joint mover logic)
-  move_to_joints(bot, q_target_arm_full, gripper_pos, duration)
-  return True
+  Args:
+      img: The image (numpy array) to display.
+      title: The title of the window.
+  """
+  cv2.imshow(title, img)
+  cv2.waitKey(1)
 
 
 def get_object_center_gemini(client, image_bgr, target_name):
-  """Uses Gemini to find 'target_name' in the image.
+  """Queries Gemini to find the pixel coordinates of a target object.
 
-  Returns: [x_pixel, y_pixel] or None if failed.
+  Args:
+      client: The configured Google GenAI client.
+      image_bgr: The input image in BGR format (OpenCV default).
+      target_name: The name/description of the object to find.
+
+  Returns:
+      np.array([x, y]): The pixel coordinates of the object center, or None if
+      not found.
   """
   # Convert OpenCV BGR to PIL RGB
   img_pil = Image.fromarray(cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB))
@@ -320,8 +127,22 @@ def get_object_center_gemini(client, image_bgr, target_name):
 
 
 def calibrate_system(cap, board_origin_robot_m):
-  """Detects the ChArUco board and computes the Homography matrix (H)
-  to map pixels to robot (X, Y) meters.
+  """Performs hand-eye calibration using a ChArUco board.
+
+  Detects the board in the camera view, calculates the homography matrix
+  mapping image pixels to the robot's coordinate system (meters), and saves
+  the result to a file.
+
+  Args:
+      cap: The OpenCV VideoCapture object.
+      board_origin_robot_m: A tuple/list (x, y) representing the physical
+        coordinates of the board's anchor corner (ID 0) in the robot's frame.
+
+  Returns:
+      tuple: (homography_matrix, z_surface_height)
+          - homography_matrix: 3x3 numpy array for perspective transform.
+          - z_surface_height: The Z-height of the calibration surface (usually 0).
+          Returns (None, None) if calibration fails.
   """
   aruco_dict = cv2.aruco.getPredefinedDictionary(config.DICT_TYPE)
   board = cv2.aruco.CharucoBoard(
@@ -416,6 +237,22 @@ def calibrate_system(cap, board_origin_robot_m):
 
 
 def main(args):
+  """Main execution loop for the robotics pointing demo.
+
+  Handles:
+  1. Hardware/Simulation setup (Robot, Camera, Kinematics).
+  2. Gemini API configuration.
+  3. System calibration (loading or performing).
+  4. Interactive loop:
+     - Shows live video feed.
+     - Captures image on user input (SPACE).
+     - Sends image + prompt to Gemini.
+     - Converts result to robot coordinates.
+     - Moves robot to point at the target.
+
+  Args:
+      args: Parsed command-line arguments.
+  """
   # --- 1. Initialization ---
   print("Setting things up, might be slow the first time...")
 
@@ -445,6 +282,7 @@ def main(args):
       print(
           "   ➡️ Proceeding in Simulation Mode (motion commands will be skipped)."
       )
+      robot = None
   else:
      print("⚠️ Simulation Mode Enabled: Skipping robot connection.")
 
@@ -517,6 +355,9 @@ def main(args):
 
   cv2.namedWindow("Vision Feedback", cv2.WINDOW_AUTOSIZE)
 
+  # State for persistent visualization
+  last_target = None # (pixel_center, target_name)
+
   while True:
     # 1. Continuous Video Feed
     ret, frame = cap.read()
@@ -530,6 +371,14 @@ def main(args):
     cv2.putText(disp, "Ready. Press SPACE to command, 'q' to quit.", (20, 30), 
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
     
+    # Draw Last Target (Persistent)
+    if last_target:
+        px, name = last_target
+        cv2.circle(disp, tuple(px), 10, (0, 255, 0), 2)
+        cv2.drawMarker(disp, tuple(px), (0, 255, 0), cv2.MARKER_CROSS, 20, 2)
+        cv2.putText(disp, f"Target: {name}", (20, 150), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
     # Show Frame
     cv2.imshow("Vision Feedback", disp)
     
@@ -566,7 +415,10 @@ def main(args):
       pixel_center = get_object_center_gemini(client, frame, target_name)
 
       if pixel_center is not None:
-        # Visualize Result (Always show this)
+        # Update Persistent Target
+        last_target = (pixel_center, target_name)
+        
+        # Visualize Result (Immediate)
         cv2.circle(disp, tuple(pixel_center), 10, (0, 255, 0), 2)
         cv2.drawMarker(
             disp, tuple(pixel_center), (0, 255, 0), cv2.MARKER_CROSS, 20, 2
@@ -609,7 +461,7 @@ def main(args):
             move_to_joints(robot, config.HOME_POSE, duration=1.5)
         else:
            print(f"📍 Target found at {pixel_center} (Visual Only).")
-           time.sleep(1.0) # Pause to let user see the result
+           # No sleep needed, loop continues and draws target
 
       else:
         print("🤷 Gemini could not locate the object.")

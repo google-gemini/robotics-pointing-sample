@@ -31,5 +31,6 @@ echo "🐍 Installing Python dependencies..."
 pip install -r requirements.txt
 
 echo "✅ Setup complete!"
-echo "   You can now configure 'config.py' and run the workshop script:"
+echo "You can now configure 'config.py' and run the workshop script:"
+echo "   conda activate $ENV_NAME"
 echo "   python workshop.py"
