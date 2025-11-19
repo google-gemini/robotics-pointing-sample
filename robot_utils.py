@@ -60,6 +60,7 @@ def download_project_files(repo_path, file_list, target_dir):
     print("   ✅ Asset check complete.")
 
 
+
 class KinematicsEngine:
     """Handles Inverse Kinematics (IK) using different backends."""
 
@@ -112,8 +113,44 @@ class KinematicsEngine:
             return
         
         try:
-            self.model = mujoco.MjModel.from_xml_path(self.model_path)
+            # Try to load XML version if available (often fixes path issues)
+            xml_path = str(Path(self.model_path).with_suffix('.xml'))
+            if os.path.exists(xml_path):
+                print(f"   ℹ️ Loading MuJoCo model from: {xml_path}")
+                self.model = mujoco.MjModel.from_xml_path(xml_path)
+            else:
+                self.model = mujoco.MjModel.from_xml_path(self.model_path)
+                
             self.data = mujoco.MjData(self.model)
+            
+            # IK Solver Setup
+            # Map config joint names (e.g. "shoulder_pan.pos") to MuJoCo names ("shoulder_pan")
+            self.mj_joint_names = [n.split('.')[0] for n in config.JOINT_NAMES[:-1]] # Exclude gripper
+            
+            self.dof_ids = []
+            for n in self.mj_joint_names:
+                id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, n)
+                if id == -1:
+                    print(f"   ⚠️ Warning: Joint '{n}' not found in MuJoCo model.")
+                self.dof_ids.append(id)
+                
+            self.qpos_indices = [self.model.jnt_qposadr[i] for i in self.dof_ids]
+            self.dof_indices = [self.model.jnt_dofadr[i] for i in self.dof_ids]
+
+            # Look for end-effector site
+            self.site_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, "gripperframe")
+            self.use_site = (self.site_id != -1)
+            if not self.use_site:
+                 self.site_id = self.model.nbody - 1 # Fallback to last body
+                 print("   ℹ️ 'gripperframe' site not found, using last body as EE.")
+
+            # Solver parameters
+            self.ik_iterations = 20
+            self.ik_damping = 0.15
+            self.ik_step_size = 0.5
+            self.jac = np.zeros((6, self.model.nv))
+            self.err = np.zeros(6)
+            
             print("   ✅ MuJoCo Kinematics ready.")
         except Exception as e:
             print(f"   ❌ Failed to load URDF for MuJoCo: {e}")
@@ -122,7 +159,7 @@ class KinematicsEngine:
         """Sets up the official LeRobot kinematics solver."""
         try:
             from lerobot.model.kinematics import RobotKinematics
-            self.solver = RobotKinematics(urdf_path=self.model_path)
+            self.solver = RobotKinematics(urdf_path=self.model_path, target_frame_name=self.ee_link)
             print("   ✅ LeRobot Kinematics ready.")
         except ImportError:
             print("   ❌ Failed to import RobotKinematics from lerobot.model.kinematics.")
@@ -130,7 +167,7 @@ class KinematicsEngine:
         except Exception as e:
             print(f"   ❌ Failed to setup LeRobot IK: {e}")
 
-    def compute_ik(self, current_joints, target_pose_matrix):
+    def compute_ik(self, current_joints, target_pose_matrix, use_orientation=True):
         """
         Computes joint angles to reach target_pose_matrix (4x4).
         Returns: np.array(6) of joint angles in DEGREES, or None if failed.
@@ -139,9 +176,12 @@ class KinematicsEngine:
         
         if self.backend == "lerobot" and self.solver:
             try:
-                # LeRobot IK expects degrees and returns degrees (based on user snippet)
+                # LeRobot IK expects degrees and returns degrees
+                orientation_weight = 1.0 if use_orientation else 0.0
                 q_sol = self.solver.inverse_kinematics(
-                    current_joints, target_pose_matrix
+                    current_joints, 
+                    target_pose_matrix,
+                    orientation_weight=orientation_weight
                 )
             except Exception as e:
                 print(f"   ❌ LeRobot IK failed: {e}")
@@ -159,7 +199,7 @@ class KinematicsEngine:
                     q_start,
                     target_pose_matrix,
                     target_link_name=self.ee_link,
-                    use_orientation=False,
+                    use_orientation=use_orientation,
                     k=0.8,
                     n_iter=50
                 )
@@ -174,9 +214,80 @@ class KinematicsEngine:
                 return None
 
         elif self.backend == "mujoco" and self.model:
-            # MuJoCo IK (Differential IK usually)
-            print("   ⚠️ MuJoCo IK not fully implemented in this snippet.")
-            return None
+            # MuJoCo IK (Jacobian Pseudo-Inverse)
+            try:
+                # 1. Extract Target Pos and Quat from Matrix
+                target_pos = target_pose_matrix[:3, 3]
+                # Convert rotation matrix to quaternion [w, x, y, z]
+                # MuJoCo uses [w, x, y, z] convention
+                from scipy.spatial.transform import Rotation as R
+                r = R.from_matrix(target_pose_matrix[:3, :3])
+                # scipy returns [x, y, z, w], need to swap to [w, x, y, z]
+                x, y, z, w = r.as_quat()
+                target_quat = np.array([w, x, y, z])
+
+                # 2. Set initial joint state (radians)
+                # Note: MuJoCo expects radians. current_joints is degrees.
+                # Also need to map to correct indices.
+                current_joints_rad = np.deg2rad(current_joints)
+                for i, q_idx in enumerate(self.qpos_indices):
+                    # Assuming current_joints order matches config.JOINT_NAMES order
+                    self.data.qpos[q_idx] = current_joints_rad[i]
+
+                # 3. Iterative Solve
+                for _ in range(self.ik_iterations):
+                    mujoco.mj_forward(self.model, self.data)
+
+                    # Get current pose
+                    if self.use_site:
+                        curr_pos = self.data.site_xpos[self.site_id]
+                        curr_quat = np.zeros(4)
+                        mujoco.mju_mat2Quat(curr_quat, self.data.site_xmat[self.site_id])
+                    else:
+                        curr_pos = self.data.xpos[self.site_id]
+                        curr_quat = self.data.xquat[self.site_id]
+
+                    # Calculate error
+                    self.err[:3] = target_pos - curr_pos
+                    neg_quat = np.array([curr_quat[0], -curr_quat[1], -curr_quat[2], -curr_quat[3]])
+                    err_quat = np.zeros(4)
+                    mujoco.mju_mulQuat(err_quat, target_quat, neg_quat)
+                    if err_quat[0] < 0: err_quat = -err_quat
+                    
+                    # Orientation error (scaled)
+                    if use_orientation:
+                        self.err[3:] = err_quat[1:] * (2 / np.sinc(np.arccos(np.clip(err_quat[0],-1,1))/np.pi))
+                    else:
+                        self.err[3:] = 0
+
+                    if np.linalg.norm(self.err) < 1e-4: break
+
+                    # Calculate Jacobian
+                    if self.use_site:
+                        mujoco.mj_jacSite(self.model, self.data, self.jac[:3], self.jac[3:], self.site_id)
+                    else:
+                        mujoco.mj_jacBody(self.model, self.data, self.jac[:3], self.jac[3:], self.site_id)
+
+                    # Solve
+                    J = self.jac[:, self.dof_indices]
+                    H = J.T @ J + np.eye(len(self.dof_ids)) * self.ik_damping
+                    delta_q = np.linalg.solve(H, J.T @ self.err)
+
+                    # Update
+                    for i, q_idx in enumerate(self.qpos_indices):
+                        val = self.data.qpos[q_idx] + self.ik_step_size * delta_q[i]
+                        # Clip to limits
+                        limit_id = self.dof_ids[i]
+                        val = np.clip(val, *self.model.jnt_range[limit_id])
+                        self.data.qpos[q_idx] = val
+                
+                # 4. Extract Result (Degrees)
+                sol_rad = [self.data.qpos[i] for i in self.qpos_indices]
+                q_sol = np.rad2deg(sol_rad)
+
+            except Exception as e:
+                print(f"   ❌ MuJoCo IK failed: {e}")
+                return None
             
         # Check if gripper pos is missing and restore if needed (LeRobot/Argo only compute 5 arm joints)
         if q_sol is not None and len(q_sol) == 5:
@@ -209,7 +320,7 @@ def move_to_joints(bot, target_joints_deg, gripper_pos=0, duration=1.5):
     time.sleep(duration / steps)
 
 
-def perform_move(bot, engine, target_xyz, gripper_pos=0, duration=1.5):
+def perform_move(bot, engine, target_xyz, gripper_pos=0, duration=1.5, use_orientation=False):
   """Calculates IK and moves the robot smoothly to the target XYZ."""
   if bot is None:
     print(
@@ -237,7 +348,7 @@ def perform_move(bot, engine, target_xyz, gripper_pos=0, duration=1.5):
   # Ideally we want the Z-axis of the EE to point towards the target or down.
   
   # 3. Compute IK
-  q_target_arm_full = engine.compute_ik(q_current, target_pose)
+  q_target_arm_full = engine.compute_ik(q_current, target_pose, use_orientation=use_orientation)
 
   if q_target_arm_full is None:
     print(f"❌ Unreachable Target: {np.round(target_xyz, 3)}")
