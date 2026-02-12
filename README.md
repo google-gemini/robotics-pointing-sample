@@ -1,8 +1,6 @@
 # Vision-Guided Manipulation with Gemini & Robot Arms
 
-This repository contains a demonstration of a Vision-Language-Action (VLA)
-system using the SO-101 robot arm, an attached USB camera, and Gemini
-models for zero-shot object detection and pointing.
+This repository contains a demonstration of Language-Guided Manipulation using the SO-101 robot arm. It utilizes Gemini (gemini-3-flash-preview by default or gemini-robotics-er-1.5-preview) to enable zero-shot detection and pointing. Gemini is used to process images and return the 2D pixel coordinates of objects in the query. Then, the script uses a kinematics module to calculate the joint angles required to reach a target position in 3D space.
 
 ## 1. Prerequisites
 
@@ -41,13 +39,13 @@ The recommended way to set up your environment is based on the
 
 ## 2. Conceptual Walkthrough
 
-This script (`workshop.py`) integrates vision, language, and action into a single loop. Here is how it works:
+This script (`workshop.py`) integrates vision, language, and action through into a single loop. Here is how it works:
 
 ### 1. Initialization
 - **Robot**: Connects to the SO-101 arm via serial port.
 - **Camera**: Opens the USB camera for video capture.
 - **Gemini**: Initializes the Google GenAI client with your API key.
-- **Kinematics**: Loads the MuJoCo physics engine to calculate how to move the robot's joints to reach specific 3D coordinates (Inverse Kinematics).
+- **Kinematics**: Loads a MuJoCo model of the robot to calculate the joint angles required to reach specific 3D coordinates using Inverse Kinematics.
 
 ### 2. Calibration (The "Eye-Hand" Connection)
 Before the robot can point at what it sees, it needs to know how pixels in the camera image relate to meters in the real world.
@@ -55,9 +53,9 @@ Before the robot can point at what it sees, it needs to know how pixels in the c
 - It calculates a **Homography Matrix**, which maps 2D image points to 2D table coordinates.
 - This calibration is saved to `homography_calibration.npy` so you don't have to recalibrate every time.
 
-### 3. The Main Loop (Vision-Language-Action)
+### 3. The Vision-Guided Control Loop
 Once calibrated, the system enters a continuous loop:
-1.  **Observe**: The camera shows a live feed of the workspace.
+1.  **Observe**: The camera captures a static image of the workspace.
 2.  **Ask**: You type a natural language query (e.g., "Where is the blue block?").
 3.  **Think (Gemini)**: The system sends the current image and your text to Gemini. Gemini analyzes the image and returns the 2D pixel coordinates of the object.
 4.  **Ground**: The script uses the calibration matrix to convert those pixels into real-world robot coordinates (X, Y, Z).
